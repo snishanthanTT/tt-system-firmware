@@ -1,0 +1,43 @@
+/*
+ * Copyright (c) 2026 Tenstorrent AI ULC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * Nucleo U385 as I3C *controller* on i3c1, with the Binho Supernova declared as
+ * a known target so the shell can address it after DAA.
+ *
+ * Desk stand-in for the MK DMC controller path used to exercise boardy OCCP
+ * encode against Binho target memory. Not a team base image.
+ *
+ *   west build -p -b nucleo_u385rg_q app/dm_test_app \
+ *     -- -DEXTRA_DTC_OVERLAY_FILE=<abs path>/nucleo_i3c_controller.overlay
+ *
+ * Zephyr still auto-applies app/dm_test_app/nucleo_u385rg_q.overlay (board-named
+ * overlay). That file puts i3c1 in target-mode, so this overlay must delete
+ * those properties. Pins / SPI / i3c2 come from the stock overlay.
+ *
+ * Binho PID/reg matches mk_i3c_controller.overlay and
+ * boardy.transports.binho.BINHO_TARGET_PID. Change one, change the other.
+ *
+ * reg encoding, per Zephyr's dts/bindings/i3c/i3c-device.yaml:
+ *   field 1: static address                    -> 0x2A
+ *   field 2: manufacturer ID << 1  (PID 47:33) -> 0x0208
+ *   field 3: lower 32 bits of the PID          -> 0x00000002
+ */
+
+&i3c1 {
+	status = "okay";
+
+	/* Stock nucleo_u385rg_q.overlay sets these; remove so we are controller. */
+	/delete-property/ target-mode;
+	/delete-property/ mipi-instance;
+
+	binho_target: binho_target@2a020800000002 {
+		compatible = "tenstorrent,smc-remoteproc";
+		reg = <0x2A 0x0208 0x00000002>;
+		/* NO supports-setaasa — same reason as mk_i3c_controller.overlay. */
+		status = "okay";
+	};
+};
