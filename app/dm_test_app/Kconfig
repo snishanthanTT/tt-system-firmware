@@ -1,0 +1,61 @@
+# Copyright (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig DM_TEST_APP_OCCP_TARGET
+	bool "Act as an OCCP target (SMC ROM emulator)"
+	depends on I3C_TARGET
+	help
+	  Run the OCCP target loop ported from the SMC production ROM on the
+	  I3C target instance, instead of the counter-based test callbacks.
+	  The board then answers OCCP GetVersion, GetStatus, ReadData and
+	  WriteData like a Mimir chiplet SMC. Bench use only: stand-in for a
+	  chiplet until real silicon exists.
+
+if DM_TEST_APP_OCCP_TARGET
+
+config DM_TEST_APP_OCCP_TARGET_MEM_BASE
+	hex "Base address of the emulated OCCP SRAM window"
+	default 0xC0066400
+	help
+	  First address that ReadData and WriteData may touch. The default is
+	  SMC_SRAM_OCCP_BASE_ADDR from the SMC ROM: the OCCP-accessible SRAM
+	  that starts after the ROM-owned data and stack.
+
+config DM_TEST_APP_OCCP_TARGET_MEM_SIZE
+	int "Size in bytes of the emulated OCCP SRAM window"
+	default 16384
+	help
+	  Backed by a static RAM array. Filled with a fixed byte pattern at
+	  boot so a ReadData proves the transport before real content exists.
+
+config DM_TEST_APP_OCCP_TARGET_ROM_IMAGE
+	bool "Serve the SMC production ROM image as a read-only window"
+	default y
+	help
+	  Embed rom/prod_rom-1.1.1.bin in flash and answer ReadData in the
+	  ROM's address range with its bytes. WriteData there is refused with
+	  Invalid_Address, as on a real chiplet.
+
+config DM_TEST_APP_OCCP_TARGET_ROM_BASE
+	hex "Base address of the ROM window"
+	depends on DM_TEST_APP_OCCP_TARGET_ROM_IMAGE
+	default 0xC0040000
+	help
+	  Where the SMC boot ROM sits in the chiplet address map. From the
+	  ROM's linker script: ORIGIN = 0xc0040000, LENGTH = 128K.
+
+config DM_TEST_APP_OCCP_TARGET_I3C_PID
+	hex "48-bit I3C provisioned ID the target advertises (informational)"
+	default 0x020813818000
+	help
+	  The SMC ROM derives its PID from eFuses and straps. On this board the
+	  PID comes from the I3C devicetree node; this value is only reported
+	  by the ROM loop's logs. Keep it equal to what ENTDAA shows.
+
+module = DM_TEST_APP_OCCP_TARGET
+module-str = occp_tgt
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # DM_TEST_APP_OCCP_TARGET
+
+source "Kconfig.zephyr"

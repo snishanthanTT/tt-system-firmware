@@ -31,10 +31,29 @@ LOG_MODULE_REGISTER(dm_test_app, LOG_LEVEL_INF);
  * instance and the real target is left with nothing servicing it.
  */
 #if DT_PROP_OR(DT_NODELABEL(i3c2), target_mode, 0)
-static const struct device *i3c_dev = DEVICE_DT_GET(DT_NODELABEL(i3c2));
+#define I3C_TARGET_NODE DT_NODELABEL(i3c2)
 #else
-static const struct device *i3c_dev = DEVICE_DT_GET(DT_NODELABEL(i3c1));
+#define I3C_TARGET_NODE DT_NODELABEL(i3c1)
 #endif
+static const struct device *i3c_dev = DEVICE_DT_GET(I3C_TARGET_NODE);
+
+#ifdef CONFIG_DM_TEST_APP_OCCP_TARGET
+/*
+ * OCCP target emulator (Nucleo bench): the SMC ROM's OCCP loop answers on the
+ * target instance instead of the counter callbacks below. See src/occp_target.
+ */
+#include "smc_occp.h"
+
+const struct device *occp_target_i3c_device(void)
+{
+	return i3c_dev;
+}
+
+uintptr_t occp_target_i3c_regs(void)
+{
+	return DT_REG_ADDR(I3C_TARGET_NODE);
+}
+#else /* CONFIG_DM_TEST_APP_OCCP_TARGET */
 
 static uint8_t value;
 
@@ -94,7 +113,8 @@ static struct i3c_target_config i3c_target_config = {
 	.callbacks = &i3c_target_callbacks,
 };
 
-#endif
+#endif /* CONFIG_DM_TEST_APP_OCCP_TARGET */
+#endif /* CONFIG_I3C_TARGET */
 
 #if DT_NODE_EXISTS(DT_NODELABEL(max7221))
 /*
@@ -602,7 +622,19 @@ int main(void)
 	post_code_show(0x0001);
 #endif
 
-#ifdef CONFIG_I3C_TARGET
+#if defined(CONFIG_DM_TEST_APP_OCCP_TARGET)
+	/*
+	 * Register the target inside smc_occp_init(), then hand the main
+	 * thread to the ROM command loop. It never returns; it sleeps between
+	 * commands so the shell and log threads keep running.
+	 */
+	if (smc_occp_init() != 0) {
+		LOG_ERR("OCCP target init failed");
+		return -EIO;
+	}
+	LOG_INF("OCCP target ready on %s", i3c_dev->name);
+	smc_occp_process();
+#elif defined(CONFIG_I3C_TARGET)
 	int ret;
 
 	if (!device_is_ready(i3c_dev)) {

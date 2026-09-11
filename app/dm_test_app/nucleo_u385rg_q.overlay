@@ -41,3 +41,21 @@
 		status = "okay";
 	};
 };
+
+/*
+ * OCCP target emulator: let the I3C target interrupt preempt the console.
+ *
+ * Every peripheral defaults to interrupt priority 0, so an in-progress UART or
+ * USB interrupt delays the I3C one. The STM32 I3C RX FIFO is 4 bytes deep and a
+ * 1 MHz write fills it in about 36 us; a busy console ISR was enough to overrun
+ * it (measured 2026-09-10: back-to-back 256-byte OCCP reads with per-command
+ * logging on lost bytes of the next write and NACKed the reply). i3c1 stays at
+ * 0; the console and USB drop to 2.
+ */
+&usart1 {
+	interrupts = <0x3d 2>;
+};
+
+&usb {
+	interrupts = <0x49 2>;
+};
