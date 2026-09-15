@@ -42,6 +42,43 @@
 	status = "okay";
 };
 
+
+&gpioa {
+	status = "okay";
+
+	/* BRING-UP: MCU_BP_RESET_Z will be used a a DMC hook to activate the capability
+	 * for the asic to release from reset.
+	 *
+	 * GPIO_ACTIVE_LOW matches the schematic: the _Z suffix on the net means
+	 * active low, so asserting reset is a physical low. Declaring that here
+	 * rather than in prose means every Zephyr API on this pin speaks in
+	 * ASSERTED / DEASSERTED instead of volts:
+	 *
+	 *   logical 1 = asserted = physically low  = chip HELD in reset
+	 *   logical 0 = deasserted = physically high = chip RELEASED
+	 */
+	bp-reset-hold {
+		gpio-hog;
+		gpios = <2 GPIO_ACTIVE_LOW>;
+		output-high;
+	};
+};
+
+&gpioc {
+	status = "okay";
+
+	/* BRING-UP: BP_VDDCORE_POWERGOOD arrives here.
+	 *
+	 * GPIO_ACTIVE_HIGH, and here that also matches the schematic: the net
+	 * carries no _Z, so it is active high.
+	 */
+	bp-vddcore-powergood {
+		gpio-hog;
+		gpios = <14 GPIO_ACTIVE_HIGH>;
+		input;
+	};
+};
+
 &clk_msis {
 	status = "okay";
 	/* BRING-UP: msi-pll-mode removed with clk_lse disabled -- MSI PLL-mode
