@@ -46,21 +46,26 @@
 &gpioa {
 	status = "okay";
 
-	/* BRING-UP: MCU_BP_RESET_Z will be used a a DMC hook to activate the capability
-	 * for the asic to release from reset.
+	/* BRING-UP: MCU_BP_RESET_Z is the DMC hook that releases the ASIC from
+	 * reset. The _Z suffix on the net means the signal is active low in
+	 * hardware: GND holds the chip in reset, VDD releases it.
 	 *
-	 * GPIO_ACTIVE_LOW matches the schematic: the _Z suffix on the net means
-	 * active low, so asserting reset is a physical low. Declaring that here
-	 * rather than in prose means every Zephyr API on this pin speaks in
-	 * ASSERTED / DEASSERTED instead of volts:
+	 * The hog is still declared GPIO_ACTIVE_HIGH on purpose. Zephyr's gpio
+	 * shell drives pins through the logical API (gpio_pin_set()), which
+	 * inverts on GPIO_ACTIVE_LOW, so declaring the schematic polarity here
+	 * would flip every value typed at the shell. Active high keeps shell
+	 * values reading as volts, which is what bring-up by hand wants:
 	 *
-	 *   logical 1 = asserted = physically low  = chip HELD in reset
-	 *   logical 0 = deasserted = physically high = chip RELEASED
+	 *   gpio set <dev> 2 0 = GND = chip HELD in reset
+	 *   gpio set <dev> 2 1 = VDD = chip RELEASED
+	 *
+	 * output-low is that same 0, so the pin parks at GND and the ASIC stays
+	 * in reset until something deliberately releases it.
 	 */
 	bp-reset-hold {
 		gpio-hog;
-		gpios = <2 GPIO_ACTIVE_LOW>;
-		output-high;
+		gpios = <2 GPIO_ACTIVE_HIGH>;
+		output-low;
 	};
 };
 
