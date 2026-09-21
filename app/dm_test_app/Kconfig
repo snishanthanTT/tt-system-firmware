@@ -44,6 +44,25 @@ config DM_TEST_APP_OCCP_TARGET_ROM_BASE
 	  Where the SMC boot ROM sits in the chiplet address map. From the
 	  ROM's linker script: ORIGIN = 0xc0040000, LENGTH = 128K.
 
+config DM_TEST_APP_OCCP_TARGET_I2C
+	bool "Also answer OCCP on the I2C target instance"
+	depends on I2C_TARGET
+	default y
+	help
+	  Register OCCP links on the enabled I2C controllers (i2c1, i2c2) as
+	  I2C targets, next to the I3C one. The real chiplet SMC listens on
+	  both buses at once. The same ROM loop serves every link; only the
+	  byte-moving backend differs.
+
+config DM_TEST_APP_OCCP_TARGET_I2C_ADDR
+	hex "7-bit I2C target address"
+	depends on DM_TEST_APP_OCCP_TARGET_I2C
+	default 0x55
+	help
+	  The SMC ROM derives its I2C address from eFuses and falls back to
+	  0x55, the hardware default. 0x55 keeps the bench host scripts equal
+	  to what a real unfused chiplet answers at.
+
 config DM_TEST_APP_OCCP_TARGET_I3C_PID
 	hex "48-bit I3C provisioned ID the target advertises (informational)"
 	default 0x020813818000

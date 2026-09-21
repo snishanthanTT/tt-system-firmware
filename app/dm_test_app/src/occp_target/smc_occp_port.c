@@ -304,25 +304,24 @@ uint64_t occp_port_i3c_pid(void)
  * Shell: occp_tgt status | fill <hex64> | dump <hex addr> <len>
  ********************************************************************/
 
-extern occp_link_t *occp_target_link(void);
-
 static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
-	occp_link_t *link = occp_target_link();
-
 	shell_print(sh, "post code   0x%08x", g_post_code);
 	shell_print(sh, "occp status 0x%08x (cmd count %u, last error 0x%02x)", occp_status_get(),
 		    occp_status_get_command_count(), occp_status_get_error_code());
 	shell_print(sh, "smc status  0x%08x (%u reports)", g_status_last, g_status_count);
-	if (link != NULL) {
+	for (size_t i = 0; i < occp_target_link_count(); i++) {
+		occp_link_t *link = occp_target_link_at(i);
+
 		shell_print(sh, "%s: rx %u transactions, %u overrun, %u aborted, %u dropped; pending %u/%u%s",
 			    link->name, link->rx_transactions, link->rx_overrun, link->rx_aborted,
 			    link->rx_dropped, link->rx_pos, link->rx_len,
 			    link->rx_active ? " (frame open)" : "");
-		shell_print(sh, "%s: tx %u replies, %u underrun, %u stale", link->name,
-			    link->tx_replies, link->tx_underrun, link->tx_stale);
+		shell_print(sh, "%s: tx %u replies, %u underrun, %u stale; pending %u/%u", link->name,
+			    link->tx_replies, link->tx_underrun, link->tx_stale, link->tx_pos,
+			    link->tx_len);
 	}
 	for (size_t i = 0; i < ARRAY_SIZE(g_windows); i++) {
 		shell_print(sh, "window %s: 0x%016llx +0x%x %s", g_windows[i].name,

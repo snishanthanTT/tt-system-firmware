@@ -74,6 +74,9 @@ static void smc_occp_init_transport_timeout(void)
 
 static uint64_t smc_occp_determine_i3c_address(uint8_t efuse_slot_id);
 static int smc_occp_init_i3c_channel(bool use_channel, uint8_t controller_id, uint64_t i3c_id);
+#ifdef CONFIG_DM_TEST_APP_OCCP_TARGET_I2C
+static int smc_occp_init_i2c_channel(bool use_channel, uint8_t controller_id, uint8_t i2c_addr);
+#endif
 static int smc_occp_poll_channels(void);
 static void smc_occp_latch_interface(int interface_index);
 static void smc_occp_unlatch_interface(void);
@@ -115,6 +118,10 @@ static void set_gpio_status(occp_error_code_t status)
 
 static smc_active_interfaces_t g_smc_active_interfaces = {0};
 static occp_link_t g_i3c_link;
+#ifdef CONFIG_DM_TEST_APP_OCCP_TARGET_I2C
+/* One link per I2C controller that answers as the OCCP target: i2c1, i2c2. */
+static occp_link_t g_i2c_links[2];
+#endif
 
 /* Interface latching state - initially -1 (no interface latched) */
 static int g_latched_interface_index = -1;
@@ -131,9 +138,14 @@ static uint8_t g_occp_data_buffer[OCCP_MAX_MSG_SIZE + 4];
 static uint8_t read_response_packet_buffer[sizeof(packet_header) + OCCP_MAX_RD_SIZE + sizeof(uint32_t)];
 
 /* For the shell. */
-occp_link_t *occp_target_link(void)
+size_t occp_target_link_count(void)
 {
-    return g_smc_active_interfaces.num_channels > 0 ? g_smc_active_interfaces.channel_drivers[0] : NULL;
+    return g_smc_active_interfaces.num_channels;
+}
+
+occp_link_t *occp_target_link_at(size_t index)
+{
+    return index < g_smc_active_interfaces.num_channels ? g_smc_active_interfaces.channel_drivers[index] : NULL;
 }
 
 /**
@@ -269,11 +281,20 @@ int smc_occp_init(void)
 
     /*
      * The ROM opens I3C channels 0, 1 and 3 and I2C channels 0 and 1, each
-     * with an ID from eFuse slots. This board has one I3C target instance.
-     * The I2C channel is added in Phase 6 of the bench plan.
+     * with an ID from eFuse slots. This board has one I3C target instance
+     * and, when configured, one I2C target instance at a fixed address.
      */
     i3c_id = smc_occp_determine_i3c_address(0x0);
     ret |= smc_occp_init_i3c_channel(true, 0, i3c_id);
+#ifdef CONFIG_DM_TEST_APP_OCCP_TARGET_I2C
+    /*
+     * The Nucleo's Arduino header I2C pins are i2c1 on a rev D board and
+     * i2c2 on a rev E board. Answer on both so the bench wiring works either
+     * way; the ROM's I2C channels 0 and 1 map onto them.
+     */
+    ret |= smc_occp_init_i2c_channel(true, 0, CONFIG_DM_TEST_APP_OCCP_TARGET_I2C_ADDR);
+    ret |= smc_occp_init_i2c_channel(true, 1, CONFIG_DM_TEST_APP_OCCP_TARGET_I2C_ADDR);
+#endif
 
     if (ret != OCCP_ERROR_NONE)
     {
@@ -356,27 +377,18 @@ static void smc_occp_latch_interface(int interface_index)
         g_interface_latching_active = true;
         g_interface_error_count = 0; /* Reset error count on successful latch */
 
-        // Report the active interface in POST code
-        switch (interface_index)
+        /*
+         * Report the active interface in POST code. The ROM maps table
+         * index to interface (I3C0, I3C1, I3C3, I2C0, I2C1); this board
+         * registers one link per bus type, so report by type instead.
+         */
+        if (g_smc_active_interfaces.type[interface_index] == DRIVER_TYPE_I2C)
         {
-        case 0:
-            smc_post_code_set_interface(POST_CODE_IFACE_I3C0);
-            break;
-        case 1:
-            smc_post_code_set_interface(POST_CODE_IFACE_I3C1);
-            break;
-        case 2:
-            smc_post_code_set_interface(POST_CODE_IFACE_I3C3);
-            break;
-        case 3:
             smc_post_code_set_interface(POST_CODE_IFACE_I2C0);
-            break;
-        case 4:
-            smc_post_code_set_interface(POST_CODE_IFACE_I2C1);
-            break;
-        default:
-            smc_post_code_set_interface(POST_CODE_IFACE_NONE);
-            break;
+        }
+        else
+        {
+            smc_post_code_set_interface(POST_CODE_IFACE_I3C0);
         }
 
         LOG_DBG("OCCP: interface latched to index %d", interface_index);
@@ -1521,6 +1533,53 @@ static int smc_occp_init_i3c_channel(bool use_channel, uint8_t peripheral_contro
     }
     return ret;
 }
+
+#ifdef CONFIG_DM_TEST_APP_OCCP_TARGET_I2C
+static int smc_occp_init_i2c_channel(bool use_channel, uint8_t controller_id, uint8_t i2c_addr)
+{
+    int ret = OCCP_ERROR_NONE;
+    if (use_channel)
+    {
+        /*
+         * Port: the ROM validates the address (0x08..0x77) and falls back to
+         * 0x55. Here the address is a build-time constant; Zephyr's I2C
+         * target registration rejects an invalid one.
+         */
+        static const struct device *const i2c_devs[] = {
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(i2c1))
+            DEVICE_DT_GET(DT_NODELABEL(i2c1)),
+#else
+            NULL,
+#endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(i2c2))
+            DEVICE_DT_GET(DT_NODELABEL(i2c2)),
+#else
+            NULL,
+#endif
+        };
+        if (controller_id >= ARRAY_SIZE(i2c_devs) || i2c_devs[controller_id] == NULL)
+        {
+            LOG_INF("I2C channel %u not present on this board, skipped", controller_id);
+            return OCCP_ERROR_NONE;
+        }
+        occp_link_t *link = &g_i2c_links[controller_id];
+        int err = occp_link_i2c_init(link, i2c_devs[controller_id], i2c_addr);
+        if (err == 0)
+        {
+            LOG_INF("I2C channel %u (%s) ready as OCCP target, address 0x%02x", controller_id, link->name, i2c_addr);
+            g_smc_active_interfaces.channel_drivers[g_smc_active_interfaces.num_channels] = link;
+            g_smc_active_interfaces.type[g_smc_active_interfaces.num_channels] = DRIVER_TYPE_I2C;
+            g_smc_active_interfaces.num_channels++;
+        }
+        else
+        {
+            LOG_ERR("Failed to initialize I2C channel %u: %d", controller_id, err);
+            ret = OCCP_ERROR_INTERFACE_ERROR;
+        }
+    }
+    return ret;
+}
+#endif /* CONFIG_DM_TEST_APP_OCCP_TARGET_I2C */
 
 static int smc_occp_read_from_bus_4byte_aligned_or_complete_stream(interface_driver_t drv, driver_type_t drv_type, uint8_t *buffer, size_t length, uint32_t timeout, bool expect_excess_bytes, bool is_flush)
 {

@@ -28,17 +28,38 @@
 	mipi-instance = <0x8>;
 };
 
+/*
+ * OCCP target emulator, second link: i2c1 as an I2C target at 0x55 (address
+ * set at runtime by the app). The board file already routes it to PB6 (SCL)
+ * and PB7 (SDA), Arduino D15 / D14 on a rev D board. The controller sets the
+ * bus speed; clock-frequency only shapes the target's filters and hold times.
+ */
+&i2c1 {
+	clock-frequency = <I2C_BITRATE_FAST>;
+};
+
+/*
+ * i2c2 is the Arduino I2C on a rev E board (PB13 / PB14). The emulator
+ * answers on it too, so the header pins work whatever the board revision.
+ * It shares PB14 with i3c2 below, which the emulator does not use.
+ */
+&i2c2 {
+	clock-frequency = <I2C_BITRATE_FAST>;
+};
+
 &i3c2 {
 	pinctrl-0 = <&i3c2_scl_pb10 &i3c2_sda_pb14>;
 	pinctrl-names = "default";
-	status = "okay";
+	/* Off on the OCCP target bench: PB14 belongs to i2c2 there. */
+	status = "disabled";
 	i3c-scl-hz = <1000000>;   /* 1 MHz I3C frequency */
 	i2c-scl-hz = <400000>;    /* 400 kHz I2C Fast Mode */
 
 	i3c2_smc_remoteproc: smc_remoteproc@20813818000 {
 		compatible = "tenstorrent,smc-remoteproc";
 		reg = <0x0000 0x0208 0x13818000>;
-		status = "okay";
+		/* Its bus is off on this bench, see i3c2 above. */
+		status = "disabled";
 	};
 };
 

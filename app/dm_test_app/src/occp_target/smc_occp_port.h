@@ -79,7 +79,7 @@
 #define simputshex64(msg, v)  LOG_DBG("%s0x%016llx", (msg), (unsigned long long)(v))
 
 /*********************************************************************
- * Bus link: one OCCP interface (I3C now, I2C later)
+ * Bus link: one OCCP interface (I3C or I2C)
  ********************************************************************/
 
 typedef enum {
@@ -132,6 +132,13 @@ typedef struct occp_link {
 
 /* Zephyr I3C target backend. base_addr is the I3C peripheral register base. */
 int occp_link_i3c_init(occp_link_t *link, const struct device *dev, uintptr_t base_addr);
+
+/* Zephyr I2C target backend, answering at the 7-bit address. */
+int occp_link_i2c_init(occp_link_t *link, const struct device *dev, uint16_t address);
+
+/* The registered links, for the shell. */
+size_t occp_target_link_count(void);
+occp_link_t *occp_target_link_at(size_t index);
 
 /* True when a complete transaction with unconsumed bytes is waiting. */
 bool occp_link_has_data(occp_link_t *link);
