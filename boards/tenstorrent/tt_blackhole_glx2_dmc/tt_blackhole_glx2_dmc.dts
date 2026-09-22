@@ -97,7 +97,7 @@
 
 &rcc {
 	clocks = <&clk_msis>;
-	clock-frequency = <DT_FREQ_M(96)>;
+	clock-frequency = <DT_FREQ_M(48)>;
 	ahb-prescaler = <1>;
 	apb1-prescaler = <1>;
 	apb2-prescaler = <1>;
@@ -123,7 +123,11 @@
 &clk_msis {
 	status = "okay";
 	msi-pll-mode;
-	msi-range = <0>; /* 96MHz (reset value) */
+	/* 48MHz (range 0 is the 96MHz reset value). Lowered for the first GLX2
+	 * bring-up: a supply decoupling capacitor sits further from the DMC than
+	 * intended, and a slower core gives the supply an easier time.
+	 */
+	msi-range = <1>;
 };
 
 &flash0 {
