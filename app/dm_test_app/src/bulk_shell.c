@@ -21,12 +21,14 @@
  *   bulk i2c write     <bus> <addr> <hex>
  *   bulk i2c read      <bus> <addr> <count>
  *   bulk i2c writeread <bus> <addr> <hex> <count>
+ *   bulk i2c sizedread <bus> <addr> <hex|-> [pec]
  *   bulk i3c write     <bus> <target> <hex>
  *   bulk i3c read      <bus> <target> <count>
  *   bulk i3c writeread <bus> <target> <hex> <count>
  *   bulk spi conf      <frequency> [settings]
  *   bulk spi cs        <port> <pin> [al|ah] | none
  *   bulk spi txrx      <bus> <hex>
+ *   bulk limits
  *
  * argc is then constant per command, ARGC_MAX leaves the picture entirely, and
  * the only limit left is BULK_MAX_BYTES against CONFIG_SHELL_CMD_BUFF_SIZE.
@@ -87,6 +89,30 @@
 
 /* Bytes of payload formatted per shell_fprintf() call in bulk_print_rx(). */
 #define BULK_HEX_CHUNK_BYTES 32
+
+/*
+ * Ceiling on the count byte a target may state in `bulk i2c sizedread`.
+ *
+ * 255 is the SMBus 3.x block maximum, and it is also a hardware fact here: the
+ * count arrives as ONE byte, so nothing larger can be expressed. Zephyr's own
+ * SMBUS_BLOCK_BYTES_MAX is 32 -- the SMBus 2.0 figure, hard-coded in
+ * include/zephyr/drivers/smbus.h with no Kconfig behind it -- which is why this
+ * command carries its own constant rather than that one.
+ */
+#define BULK_SIZED_MAX_COUNT 255U
+
+/* bulk_rx has to hold the count byte, a full block, and the PEC byte. */
+BUILD_ASSERT(BULK_MAX_BYTES >= 1 + BULK_SIZED_MAX_COUNT + 1,
+	     "bulk_rx too small for a sized read");
+
+/*
+ * sizedread aliases the count byte into the low byte of the next message's
+ * length field, which is only the byte the hardware fills on a little-endian
+ * target. Every Zephyr ARM target this app builds for is little-endian, and
+ * upstream's smbus_stm32.c states the same assumption in as many words.
+ */
+BUILD_ASSERT(IS_ENABLED(CONFIG_LITTLE_ENDIAN),
+	     "sizedread aliases a count byte into i2c_msg.len");
 
 static const char bulk_hex_digits[] = "0123456789abcdef";
 
@@ -232,6 +258,21 @@ static int bulk_parse_addr(const struct shell *sh, const char *s, uint16_t *addr
 	}
 
 	*addr = (uint16_t)v;
+
+	return 0;
+}
+
+/* A 0/1 token, for the optional flags that would otherwise be a bare number. */
+static int bulk_parse_flag(const struct shell *sh, const char *s, bool *flag)
+{
+	if (strcmp(s, "0") == 0) {
+		*flag = false;
+	} else if (strcmp(s, "1") == 0) {
+		*flag = true;
+	} else {
+		shell_error(sh, "bulk: error: want 0 or 1, got '%s'", s);
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -449,6 +490,136 @@ static int cmd_bulk_i2c_writeread(const struct shell *sh, size_t argc, char **ar
 
 	return 0;
 }
+
+#ifdef CONFIG_I2C_STM32
+
+/*
+ * `bulk i2c sizedread <bus> <addr> <hexprefix|-> [pec]` -- a read whose length
+ * the TARGET states, in one transaction.
+ *
+ * The SMBus Block Read shape (SMBus 3.2 section 6.5.7): the first byte back is
+ * a count, and that many data bytes follow it inside the same transaction. No
+ * fixed-length read expresses it. Ask for too few and the tail is left on the
+ * bus; ask for too many and a PMBus device answers the surplus clocks with 0xFF
+ * and latches a communication fault (PMBus 1.4 Part II section 10.9.1). The
+ * count has to steer the transfer while it is still running.
+ *
+ * The message layout is upstream's, from smbus_block_read() in
+ * drivers/smbus/smbus_stm32.c: msgs[1] reads the count byte straight INTO the
+ * length field of msgs[2], which then carries exactly that many bytes. Two
+ * properties of the STM32 driver make it work, and CONFIG_I2C_STM32 is what
+ * this is gated on:
+ *
+ *  - i2c_stm32_transfer() hands each message to the hardware by value as it
+ *    reaches it (`i2c_stm32_transaction(dev, *current, ...)`), so msgs[2] is
+ *    read only after msgs[1] has landed its byte in it.
+ *  - consecutive same-direction messages with no I2C_MSG_RESTART chain in
+ *    RELOAD mode, so nothing separates the count byte from the data -- no stop,
+ *    no repeated start. The clock stretches while NBYTES is reloaded.
+ *
+ * A prefix of `-` writes nothing at all, which is the plain `S Addr+R` form.
+ *
+ * The bytes are printed RAW: the count first, then the data, then the PEC byte
+ * when one was asked for. boardy checks the framing and verifies the PEC itself
+ * (protocols/smbus.py), so stripping either here would remove exactly what it
+ * checks -- which is what `smbus block_read` does, and why this is not that.
+ *
+ * The count is one byte, so it is bounded at BULK_SIZED_MAX_COUNT by
+ * construction: a device that answers 0xFF costs 255 bytes of an already
+ * allocated buffer, not a stack smash.
+ */
+static int cmd_bulk_i2c_sizedread(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev;
+	uint8_t pec_byte = 0;
+	uint16_t addr;
+	bool pec = false;
+	size_t count;
+	uint8_t first;
+	uint8_t num;
+	int len = 0;
+	int ret;
+
+	dev = bulk_device(sh, argv[1]);
+	if (dev == NULL) {
+		return -ENODEV;
+	}
+	if (bulk_parse_addr(sh, argv[2], &addr) < 0) {
+		return -EINVAL;
+	}
+	if (argc > 4 && bulk_parse_flag(sh, argv[4], &pec) < 0) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&bulk_xfer_lock, K_FOREVER);
+
+	if (strcmp(argv[3], "-") != 0) {
+		len = bulk_hex_decode(sh, argv[3], bulk_tx, sizeof(bulk_tx));
+		if (len < 0) {
+			k_mutex_unlock(&bulk_xfer_lock);
+			return len;
+		}
+	}
+
+	struct i2c_msg msgs[] = {
+		{
+			.buf = bulk_tx,
+			.len = (uint32_t)len,
+			.flags = I2C_MSG_WRITE,
+		},
+		{
+			/* Points at the next message's len; set below, because a
+			 * designated initializer cannot name the array it is in.
+			 */
+			.buf = NULL,
+			.len = 1,
+			.flags = I2C_MSG_READ | I2C_MSG_RESTART,
+		},
+		{
+			.buf = &bulk_rx[1],
+			.len = 0, /* written by the message above, mid-transfer */
+			.flags = I2C_MSG_READ,
+		},
+		{
+			.buf = &pec_byte,
+			.len = 1,
+			.flags = I2C_MSG_READ,
+		},
+	};
+
+	msgs[1].buf = (uint8_t *)&msgs[2].len;
+
+	/* No prefix means no write phase: start at the read and let i2c_transfer
+	 * put the start condition on it.
+	 */
+	first = (len > 0) ? 0 : 1;
+	num = (uint8_t)((pec ? 4 : 3) - first);
+
+	ret = i2c_transfer(dev, &msgs[first], num, addr);
+	if (ret == 0) {
+		count = (size_t)msgs[2].len;
+		bulk_rx[0] = (uint8_t)count;
+		if (pec) {
+			bulk_rx[1 + count] = pec_byte;
+		}
+		bulk_print_rx(sh, bulk_rx, 1 + count + (pec ? 1 : 0));
+	}
+
+	k_mutex_unlock(&bulk_xfer_lock);
+
+	if (ret < 0) {
+		/* The driver collapses NACK, arbitration loss and timeout into
+		 * one -EIO, so the phase that failed cannot be named. Upstream's
+		 * read wording covers all of them for boardy's _NACK_MARKERS.
+		 */
+		shell_error(sh, "Failed to read from device: 0x%02x", addr);
+		return ret;
+	}
+
+	return 0;
+}
+
+#endif /* CONFIG_I2C_STM32 */
 
 #ifdef CONFIG_I3C_CONTROLLER
 
@@ -859,6 +1030,51 @@ static int cmd_bulk_spi_txrx(const struct shell *sh, size_t argc, char **argv)
 
 #endif /* CONFIG_SPI */
 
+/*
+ * `bulk limits` -- what this firmware's shell can carry, as key=value tokens.
+ *
+ * A host driving the shell has to size its transfers to the image in front of
+ * it, and every one of these numbers is a Kconfig symbol that a build can
+ * change. Without this it has to assume the stock values, and the failures when
+ * it assumes wrong are the quiet kind: `i2c read` clamps a long read to its
+ * buffer, `i2c write` truncates a long write and reports it over shell_info, so
+ * both come back looking successful.
+ *
+ * One line, decimal, lowercase keys, order not significant. A host should take
+ * the keys it knows and ignore the rest, so tokens can be added here without
+ * breaking it.
+ *
+ * Absence is the legacy signal: firmware without this command has the stock
+ * limits and no sizedread. Note that on firmware that HAS `bulk` but not
+ * `limits`, the shell answers with the `bulk` help text rather than
+ * "command not found" (subsys/shell/shell.c prints that only for an unknown
+ * ROOT command), so a host must decide by whether it can find the tokens, not
+ * by matching an error string.
+ */
+static int cmd_bulk_limits(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	shell_print(sh,
+		    "i2c_shell_buffer=%d argc_max=%d cmd_buff=%d rx_ring=%d "
+		    "bulk_max=%d sizedread=%d sizedread_max=%u",
+#ifdef CONFIG_I2C_SHELL_BUFFER_SIZE
+		    CONFIG_I2C_SHELL_BUFFER_SIZE,
+#else
+		    0, /* no i2c shell in this build, so no i2c read/write at all */
+#endif
+		    CONFIG_SHELL_ARGC_MAX, CONFIG_SHELL_CMD_BUFF_SIZE,
+#ifdef CONFIG_SHELL_BACKEND_SERIAL_RX_RING_BUFFER_SIZE
+		    CONFIG_SHELL_BACKEND_SERIAL_RX_RING_BUFFER_SIZE,
+#else
+		    0,
+#endif
+		    BULK_MAX_BYTES, IS_ENABLED(CONFIG_I2C_STM32), BULK_SIZED_MAX_COUNT);
+
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_bulk_i2c,
 	SHELL_CMD_ARG(write, NULL,
@@ -884,6 +1100,16 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 				 "<bus> <addr> <hex> <count>\n"
 				 "Example: bulk i2c writeread i2c1 0x50 0000 256"),
 		      cmd_bulk_i2c_writeread, 5, 0),
+#ifdef CONFIG_I2C_STM32
+	SHELL_CMD_ARG(sizedread, NULL,
+		      SHELL_HELP("Read a block whose length the target states (SMBus block read)",
+				 "<bus> <addr> <hex|-> [pec]\n"
+				 "Writes <hex> (- for nothing), repeated start, then reads a\n"
+				 "count byte and that many bytes. pec=1 clocks one more.\n"
+				 "Prints them RAW: count first, data, then PEC. One transaction.\n"
+				 "Example: bulk i2c sizedread i2c1 0x40 ad 0"),
+		      cmd_bulk_i2c_sizedread, 4, 1),
+#endif
 	SHELL_SUBCMD_SET_END);
 
 #ifdef CONFIG_I3C_CONTROLLER
@@ -940,6 +1166,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 #ifdef CONFIG_SPI
 	SHELL_CMD(spi, &sub_bulk_spi, "SPI transfers, payload as one hex token", NULL),
 #endif
+	SHELL_CMD_ARG(limits, NULL,
+		      SHELL_HELP("Print this firmware's shell and transfer limits",
+				 "\nOne line of key=value tokens. Absent on older firmware,\n"
+				 "which has the stock limits and no sizedread.\n"
+				 "Example: bulk limits"),
+		      cmd_bulk_limits, 1, 0),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(bulk, &sub_bulk,

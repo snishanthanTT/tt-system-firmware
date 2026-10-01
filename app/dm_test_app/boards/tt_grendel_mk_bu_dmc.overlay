@@ -1,0 +1,57 @@
+/*
+ * Copyright (c) 2026 Tenstorrent AI ULC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * SMBus controllers over the three I2C buses, for the `smbus` shell.
+ *
+ * Zephyr's SMBus driver for STM32 is a protocol layer over an ordinary I2C
+ * controller: smbus_stm32.c turns each SMBus protocol into i2c_transfer() calls
+ * on the device its `i2c` phandle names. So these nodes add no hardware, they
+ * add a second driver in front of hardware the board already has, and the
+ * `smbus` shell commands are what they exist for here -- `bulk` reaches the
+ * same buses through the I2C API directly and needs none of this.
+ *
+ * On STM32U3 these have to be declared in full. The G0 SoC dtsi predefines
+ * disabled smbus1/2/3 nodes for boards to enable; the U3 one does not.
+ *
+ * pinctrl-0 is NOT optional even though it repeats the I2C node's pins:
+ * smbus_stm32_init() calls pinctrl_apply_state(PINCTRL_STATE_DEFAULT) and
+ * fails init when the node has no state to apply, taking the device -- and
+ * anything bound under it -- out of the device list with only a log line.
+ * Re-applying the same alternate-function config is idempotent.
+ */
+
+/ {
+	smbus1: smbus1 {
+		compatible = "st,stm32-smbus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		i2c = <&i2c1>;
+		pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb7>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+
+	smbus2: smbus2 {
+		compatible = "st,stm32-smbus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		i2c = <&i2c2>;
+		pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pb14>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+
+	smbus3: smbus3 {
+		compatible = "st,stm32-smbus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		i2c = <&i2c3>;
+		pinctrl-0 = <&i2c3_scl_pa7 &i2c3_sda_pb4>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};
