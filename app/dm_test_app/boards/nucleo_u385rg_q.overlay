@@ -1,0 +1,173 @@
+/*
+ * Copyright (c) 2026 Tenstorrent AI ULC
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * Mirror of boards/tt_blackhole_glx2_dmc.overlay, as closely as a NUCLEO-U385RG-Q
+ * can carry it.
+ *
+ * The point of this board target is to rehearse the GLX2 CMB bring-up before CMB
+ * hardware is on the bench: boardy opens the DMC shell, sets a bus speed on each
+ * of i2c1/i2c2/i2c3, and drives SMBus frames through `bulk` and through Zephyr's
+ * `smbus` shell. None of that works unless the same THREE i2c controllers and the
+ * same THREE smbus nodes exist here under the same names -- boardy's g2_cmb.json
+ * names them, and a missing one aborts the connect with "Device driver i2c3 not
+ * found" before any transfer is attempted.
+ *
+ * So the device *names* are what this file reproduces. The pads mostly cannot be,
+ * and that is the one real difference from the CMB:
+ *
+ *   bus    GLX2 CMB (u375veix, ~100 pins)   this Nucleo (u385rgtxq, LQFP64)
+ *   i2c1   scl PB6  sda PB7  smba PB5       identical
+ *   i2c2   scl PB10 sda PA6  smba PB12      scl/sda identical, smba -> PA1
+ *   i2c3   scl PD12 sda PD13 smba PB2       smba identical, scl -> PA7, sda -> PB4
+ *
+ * Why i2c3 had to move: stm32u385rgtxq-pinctrl.dtsi defines exactly two port D/E
+ * pads on this package, PD2 and PE4. There is no PD12 or PD13 to name, so the
+ * CMB's i2c3 pinout cannot be spelled here at all -- the package does not bond
+ * those pads. The package does offer i2c3 on {scl: PA7, PC0} x {sda: PB4, PC1},
+ * and PA7/PB4 is the pair that costs the least elsewhere (PC0 is the board's
+ * adc1 input, PC1 is i3c1's sda).
+ *
+ * Why i2c2's SMBA had to move: this package offers i2c2_smba on PA1 and PA14
+ * only. PA14 is SWCLK -- taking it would cut the SWD link the RTT shell runs
+ * over, i.e. the console this whole board target exists to provide. PA1 it is.
+ *
+ * The GLX2's &gpioe hogs (PE5/PE1, the PMBus eFuse/VR routing) are deliberately
+ * absent. PE1 and PE5 are not bonded on LQFP64 either, and there is no level
+ * shifter or VR behind them here to switch -- that route is CMB board topology,
+ * not firmware behaviour, so there is nothing for a rehearsal to learn from it.
+ */
+
+/*
+ * spi1 and spi3 are turned off because this file needs four of their eight pads:
+ * PA6 (spi1 miso) and PA7 (spi1 mosi) for i2c2 sda and i2c3 scl, PB4 (spi3 miso)
+ * and PB5 (spi3 mosi) for i2c3 sda and i2c1 smba.
+ *
+ * Two enabled nodes claiming one pad is not a build error in Zephyr -- pinctrl
+ * applies each node's state at that device's init and the later one silently
+ * wins -- so leaving these `okay` would produce a board that builds, boots, and
+ * then fails one bus or the other depending on init order. Disabling them states
+ * the trade rather than leaving it to chance.
+ *
+ * The MAX7219 that used to hang off spi1 goes with it. It was never part of the
+ * GLX2 design -- the CMB has no display -- so it was rehearsing a code path the
+ * real board does not have. CONFIG_DISPLAY stays on in prj.conf and simply binds
+ * nothing, exactly as it already does on the GLX2 build.
+ */
+&spi1 {
+	status = "disabled";
+};
+
+&spi3 {
+	status = "disabled";
+};
+
+/*
+ * i3c1 is `okay` in the Nucleo board devicetree on PB2/PC1, and the previous
+ * version of this overlay enabled i3c1 (target-mode) and i3c2 on top of that.
+ * Both are removed.
+ *
+ * Two reasons. The pads: i2c3 needs PB2 for its SMBA, which is i3c1's scl, and
+ * the old i3c2 node sat on PB10, which is i2c2's scl on the CMB -- so I3C and a
+ * faithful i2c2/i2c3 cannot coexist on this package.
+ *
+ * The behaviour: the GLX2 CMB build has no I3C at all. Its own .conf says so in
+ * as many words -- "No I3C, and nothing to write for it" -- because the CMB's
+ * i3c1 answers a tray BMC that is not present on a bare board. Keeping I3C here
+ * meant the Nucleo was rehearsing a bus the CMB never drives, at the cost of the
+ * three it does, and paying for it with the "No response to broadcast address"
+ * and "RSTDAA error (-5)" storm every boot. That storm is not harmless noise: it
+ * runs through CONFIG_SHELL_LOG_BACKEND into the same RTT channel the shell
+ * reads commands on.
+ */
+&i3c1 {
+	status = "disabled";
+};
+
+/*
+ * The three I2C controllers, pinned as close to the CMB as the package allows.
+ *
+ * i2c1 and i2c2 are already `okay` in the board devicetree; i2c2's pinctrl-0 is
+ * overridden here rather than extended, because a pinctrl-0 in an overlay
+ * replaces the property outright -- the board's PB13/PB14 pair is gone, not
+ * merged. i2c3 is `disabled` in the SoC dtsi (stm32u3.dtsi, i2c@40042800) and has
+ * to be switched on.
+ *
+ * SMBA is in every group. It is not needed to move bytes, but smbus_stm32 is a
+ * protocol layer bolted onto these same controllers and the CMB routes an alert
+ * line on all three buses, so declaring it keeps the two devicetrees the same
+ * shape. CONFIG_SMBUS_STM32_SMBALERT defaults to y and must stay there -- see the
+ * .conf for why setting it to n does not build.
+ */
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7 &i2c1_smba_pb5>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&i2c2 {
+	pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pa6 &i2c2_smba_pa1>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&i2c3 {
+	pinctrl-0 = <&i2c3_scl_pa7 &i2c3_sda_pb4 &i2c3_smba_pb2>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/*
+ * SMBus controllers over the three I2C buses, for the `smbus` shell.
+ *
+ * Copied in shape and in reasoning from boards/tt_blackhole_glx2_dmc.overlay,
+ * whose comment applies verbatim here: smbus_stm32.c is a protocol layer over an
+ * ordinary I2C controller, turning each SMBus protocol into i2c_transfer() calls
+ * on the device its `i2c` phandle names. These nodes add no hardware, they add a
+ * second driver in front of hardware the board already has.
+ *
+ * On STM32U3 they have to be declared in full -- the G0 SoC dtsi predefines
+ * disabled smbus1/2/3 nodes for boards to enable, the U3 one does not.
+ *
+ * pinctrl-0 is NOT optional even though it repeats the I2C node's pins:
+ * smbus_stm32_init() calls pinctrl_apply_state(PINCTRL_STATE_DEFAULT) and fails
+ * init when the node has no state to apply, taking the device out of the device
+ * list with only a log line. Re-applying the same alternate-function config is
+ * idempotent.
+ *
+ * The pins are this board's, not the CMB's -- see the table at the top.
+ */
+/ {
+	smbus1: smbus1 {
+		compatible = "st,stm32-smbus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		i2c = <&i2c1>;
+		pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7 &i2c1_smba_pb5>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+
+	smbus2: smbus2 {
+		compatible = "st,stm32-smbus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		i2c = <&i2c2>;
+		pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pa6 &i2c2_smba_pa1>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+
+	smbus3: smbus3 {
+		compatible = "st,stm32-smbus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		i2c = <&i2c3>;
+		pinctrl-0 = <&i2c3_scl_pa7 &i2c3_sda_pb4 &i2c3_smba_pb2>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+};

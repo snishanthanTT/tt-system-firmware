@@ -52,5 +52,3 @@ fi
 if ((flash)); then
   "${PYOCD[@]}" flash "${PROBE_ARGS[@]}" "${OUT}/zephyr.hex"
 fi
-
-exec "${SCRIPT_DIR}/nucleo-rtt-shell.sh"
