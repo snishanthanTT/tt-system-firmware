@@ -6,51 +6,11 @@
 
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
-/*
- * BRING-UP: the DMC's route to the VR PMBus, asserted at boot.
- *
- * boardy's g2_cmb.json records the route in as many words, on the U5100 entry:
- * "From the DMC it is two hops: PE5 (PMBUS_EFUSE_I2C2_MUX_EN) high to open
- * level shifter U2202 onto DMC_I2C2, THEN PE1 (PMBUS_EFUSE_VRM_EN_Z) low to
- * close switch U231 and bridge the VR PMBus onto the eFuse PMBus -- outer
- * shifter first, then the bridge."
- *
- * Hogs rather than application code, matching the &gpiob SPI-flash-mux hogs in
- * this board's own devicetree and the PA2/PC14 hogs on tt_grendel_mk_bu_dmc.
- * gpio_hogs_init() runs at POST_KERNEL/41 against POST_KERNEL/50 for the I2C,
- * SPI and I3C controllers, so both shifters are settled before any bus
- * enumerates.
- *
- * Both nodes are GPIO_ACTIVE_HIGH even though PE1's net is active low. That is
- * the convention 325a77e7 landed on for MK: Zephyr's gpio shell drives pins
- * through the logical API, which inverts on GPIO_ACTIVE_LOW, so declaring the
- * schematic polarity here would flip every value typed at the shell. Active
- * high keeps `output-high`/`output-low` -- and `gpio set` -- reading as volts.
- *
- * Note the preconditions these do NOT satisfy. U2202 and U2200 take their
- * B-side supply from switched P1V8_VDDIO rather than P1V8_AON, so this route
- * needs P3V3_BIAS *and* P1V8_VDDIO up regardless of the pins; and nothing on
- * the VR PMBus answers until the IBC (U5100) is up. These hogs remove the GPIO
- * precondition, not the power one.
- *
- * PE4 (PMBUS_BH_I2C1_MUX_EN) is deliberately absent. It is the OE of U2200,
- * which bridges the VR PMBus onto the *ASIC's* BH_I2C1, not onto anything the
- * DMC reads, and it is already enabled at reset. Driving it would add a second
- * master to a bus boardy is using.
- */
 &gpioe {
 	status = "okay";
 
 	/*
-	 * PE5 -- OE of U2202, eFuse PMBus onto DMC_I2C2.
-	 *
-	 * This one is redundant on proto-0 and declared anyway. The OE sits on a
-	 * populated 1.27k/11k divider off P3V3_BIAS (R2227/R2361) that holds it at
-	 * ~2.96 V = 0.90 x VCCA, so i2c2 and pmbus_efuse are already one
-	 * electrical segment at reset -- an i2cdetect on either enumerates the FRU
-	 * EEPROM at 0x50 and the eFuse at 0x40. Hogging it high states the
-	 * intended level rather than inheriting it from a divider, and keeps the
-	 * two halves of the route described in one place.
+	 * BRING-UP: PE5 -- OE of U2202, eFuse PMBus onto DMC_I2C2.
 	 */
 	pmbus-efuse-i2c2-mux-en {
 		gpio-hog;
@@ -59,49 +19,84 @@
 	};
 
 	/*
-	 * PE1 -- PMBUS_EFUSE_VRM_EN_Z, reaching U231 through inverter U234, so GND
+	 * BRING-UP: PE1 -- PMBUS_EFUSE_VRM_EN_Z, reaching U231 through inverter U234, so GND
 	 * is what closes the bridge. output-low is that GND.
-	 *
-	 * Two consequences worth knowing at the bench:
-	 *
-	 *  - This net is SHARED with the B2B connector. The tray BMC drives it too
-	 *    and can open or close the bridge from the other side, so two drivers
-	 *    can contend on it.
-	 *  - Once closed, pmbus_vr and pmbus_efuse are ONE bus. boardy models them
-	 *    as two segments, so it will not warn about an address collision
-	 *    across them, and the MPC12209's 400 kHz CAPABILITY cap then
-	 *    constrains DMC_I2C2 as a whole.
 	 */
 	pmbus-efuse-vrm-en {
 		gpio-hog;
 		gpios = <1 GPIO_ACTIVE_HIGH>;
 		output-low;
 	};
+
+	/*
+	 * BRING-UP: PE6 -- DMC_I2C_B2B_EDGE_EN, OE of U232.
+	 */
+	dmc-i2c-b2b-edge-en {
+		gpio-hog;
+		gpios = <6 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
+
+	/*
+	 * BRING-UP: PE2 -- DMC_I2C_RESET_B2B_Z, reset of the U2201 TCA9546A mux. Active low,
+	 * so high is out of reset and output-high is that release.\
+	 */
+	dmc-i2c-reset-b2b {
+		gpio-hog;
+		gpios = <2 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
+};
+
+&gpioc {
+	status = "okay";
+
+	/*
+	 * BRING-UP: PC5 -- GPIO1 for EFuse state enable. Disabled by default.
+	 */
+	efus-en1_dmc {
+		gpio-hog;
+		gpios = <5 GPIO_ACTIVE_HIGH>;
+		output-low;
+	};
+
+	/*
+	 * BRING-UP: PC6 -- GPIO2 for EFuse state enable. Disabled by default.
+	 */
+	efus-en2_dmc {
+		gpio-hog;
+		gpios = <6 GPIO_ACTIVE_HIGH>;
+		output-low;
+	};
+	
+	/*
+	* BRING-UP: PC13 -- DMC_SPI_MUX_EN_Z, the shared enable of the three cascaded
+	* TMUX1574 SPI muxes on sheet 28. Active low, so output-low is what turns them
+	* on.
+	*/
+	dmc-spi-mux-en {
+		gpio-hog;
+		gpios = <13 GPIO_ACTIVE_HIGH>;
+		output-low;
+	};
+};
+
+/*
+ * BRING-UP: PD14 -- DMC_RC22504_OE_Z, the OE_nCS pin of the RC22504A reference
+ * clock generator (U400) on sheet 24.
+ */
+&gpiod {
+	status = "okay";
+
+	dmc-rc22504-oe {
+		gpio-hog;
+		gpios = <14 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
 };
 
 /*
  * SMBus controllers over the three I2C buses, for the `smbus` shell.
- *
- * Zephyr's SMBus driver for STM32 is a protocol layer over an ordinary I2C
- * controller: smbus_stm32.c turns each SMBus protocol into i2c_transfer() calls
- * on the device its `i2c` phandle names. So these nodes add no hardware, they
- * add a second driver in front of hardware the board already has, and the
- * `smbus` shell commands are what they exist for here -- `bulk` reaches the
- * same buses through the I2C API directly and needs none of this.
- *
- * On STM32U3 these have to be declared in full. The G0 SoC dtsi predefines
- * disabled smbus1/2/3 nodes for boards to enable; the U3 one does not.
- *
- * pinctrl-0 is NOT optional even though it repeats the I2C node's pins:
- * smbus_stm32_init() calls pinctrl_apply_state(PINCTRL_STATE_DEFAULT) and
- * fails init when the node has no state to apply, taking the device -- and
- * anything bound under it -- out of the device list with only a log line.
- * Re-applying the same alternate-function config is idempotent.
- *
- * The pins are this board's, and they are NOT the MK ones: the GLX2 DMC is the
- * u375veix package where MK is u375rgtx, and i2c2/i2c3 land on different pads
- * entirely. Each group mirrors the matching node in the board devicetree,
- * SMBA pin included -- all three buses route one here, unlike MK.
  */
 / {
 	smbus1: smbus1 {
