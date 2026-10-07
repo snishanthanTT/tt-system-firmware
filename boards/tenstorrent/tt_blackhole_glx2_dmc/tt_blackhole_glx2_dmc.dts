@@ -113,6 +113,17 @@
 };
 
 &clk_lse {
+	/* BRING-UP: no 32.768 kHz crystal reaches the DMC on proto-0. Zephyr's
+	 * STM32 clock init enables every "okay" clock and polls its ready flag
+	 * with no timeout, so an absent LSE spins forever in
+	 * set_up_fixed_clock_sources(), before console init -- a board that
+	 * looks dead with no RTT control block in SRAM. LSI (below) covers the
+	 * low-speed need, which here is the IWDG.
+	 */
+	status = "disabled";
+};
+
+&clk_lsi {
 	status = "okay";
 };
 
@@ -122,7 +133,10 @@
 
 &clk_msis {
 	status = "okay";
-	msi-pll-mode;
+	/* BRING-UP: msi-pll-mode removed with clk_lse disabled -- MSI PLL-mode
+	 * auto-calibration requires LSE or HSE, and neither is available here.
+	 * MSI then runs on factory trim only.
+	 */
 	/* 48MHz (range 0 is the 96MHz reset value). Lowered for the first GLX2
 	 * bring-up: a supply decoupling capacitor sits further from the DMC than
 	 * intended, and a slower core gives the supply an easier time.
