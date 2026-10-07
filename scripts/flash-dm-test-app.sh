@@ -3,24 +3,26 @@
 # Copyright (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-# Build app/dm_test_app via build-dm-test-app.sh and flash it via pyocd.
+# Flash an already-built app/dm_test_app hex via pyocd. Builds nothing; use
+# scripts/build-flash-dm-test-app.sh when the hex also needs to be produced.
 #
-#   scripts/build-flash-dm-test-app.sh    # builds, then flashes. Always both.
-#   FREQ=200k scripts/build-flash-dm-test-app.sh   # ...with a slower SWD clock
-#   BOARD=<board> TARGET=<target> PROBE=<probe> OUT=<out> scripts/build-flash-dm-test-app.sh
+#   scripts/flash-dm-test-app.sh          # flashes the last GLX2 build
+#   FREQ=200k scripts/flash-dm-test-app.sh   # ...with a slower SWD clock
+#   BOARD=<board> TARGET=<target> PROBE=<probe> HEX=<hex> scripts/flash-dm-test-app.sh
 #
 # Everything is an environment variable. The defaults are the GLX2 CMB
 # bring-up path, so that one needs no variables at all:
 #
-#   BOARD   board to build        default tt_blackhole_glx2_dmc
-#   TARGET  pyocd target (die)    default stm32u375veix
-#   OUT     where the build goes  default <repo>/build-output/$BOARD
-#   PROBE   pyocd probe UID (-u)  default empty
-#   FREQ    SWD clock, pyocd -f   default empty (pyocd uses 1 MHz)
-
-#   BOARD                  TARGET        
-#   tt_blackhole_glx2_dmc  stm32u375veix 
-#   tt_grendel_mk_bu_dmc   stm32u375rgt6 
+#   BOARD   board whose output to flash  default tt_blackhole_glx2_dmc
+#   TARGET  pyocd target (die)           default stm32u375veix
+#   OUT     where the build landed       default <repo>/build-output/$BOARD
+#   HEX     image to flash               default $OUT/zephyr.hex
+#   PROBE   pyocd probe UID (-u)         default empty
+#   FREQ    SWD clock, pyocd -f          default empty (pyocd uses 1 MHz)
+#
+#   BOARD                  TARGET
+#   tt_blackhole_glx2_dmc  stm32u375veix
+#   tt_grendel_mk_bu_dmc   stm32u375rgt6
 #   nucleo_u385rg_q        stm32u385rgtxq
 #
 # PROBE is only needed when pyocd can see more than one debug probe; with one
@@ -44,9 +46,9 @@ WORKSPACE_DIR="$(dirname "${SCRIPT_DIR}")"
 BOARD="${BOARD:-tt_blackhole_glx2_dmc}"
 TARGET="${TARGET:-stm32u375veix}"
 OUT="${OUT:-${WORKSPACE_DIR}/build-output/${BOARD}}"
+HEX="${HEX:-${OUT}/zephyr.hex}"
 PROBE="${PROBE:-}"
 FREQ="${FREQ:-}"
-export BOARD TARGET OUT PROBE FREQ
 
 if command -v pyocd >/dev/null 2>&1; then
   PYOCD=(pyocd)
@@ -60,10 +62,12 @@ else
   exit 1
 fi
 
-if ! docker info >/dev/null 2>&1 && ! sudo -n docker info >/dev/null 2>&1; then
-  echo "$0: cannot talk to docker, which is where the build runs." >&2
-  echo "  check the daemon is up, and that you are in the docker group" >&2
-  echo "  (newgrp docker, or log out and back in, after being added)" >&2
+# Checked here rather than left to pyocd, whose error does not name the path it
+# wanted.
+if [[ ! -f "${HEX}" ]]; then
+  echo "$0: no image at ${HEX}" >&2
+  echo "  build one first:  scripts/build-dm-test-app.sh" >&2
+  echo "  or point HEX=<path> at an existing hex" >&2
   exit 1
 fi
 
@@ -99,16 +103,6 @@ if [[ -n "${FREQ}" ]]; then
   PROBE_ARGS+=(-f "${FREQ}")
 fi
 
-echo "board=${BOARD} target=${TARGET} out=${OUT} probe=${PROBE:-<auto>} freq=${FREQ:-<default>}"
+echo "board=${BOARD} target=${TARGET} hex=${HEX} probe=${PROBE:-<auto>} freq=${FREQ:-<default>}"
 
-"${SCRIPT_DIR}/build-dm-test-app.sh"
-
-# Checked here rather than left to pyocd, whose error does not name the path it
-# wanted: a docker build that exits clean without copying anything out lands
-# here with no hex.
-if [[ ! -f "${OUT}/zephyr.hex" ]]; then
-  echo "$0: build produced no ${OUT}/zephyr.hex" >&2
-  exit 1
-fi
-
-"${PYOCD[@]}" flash "${PROBE_ARGS[@]}" "${OUT}/zephyr.hex"
+"${PYOCD[@]}" flash "${PROBE_ARGS[@]}" "${HEX}"
